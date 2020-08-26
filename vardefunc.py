@@ -2,13 +2,17 @@
 Various functions I use.
 """
 import math
+import os
 import subprocess
-from typing import Tuple, Callable, Dict, Any, cast, Union
+import sys
 from functools import partial
+from pathlib import Path
+from typing import Tuple, Callable, Dict, Any, cast, Union
 
 import fvsfunc as fvf
 import havsfunc as hvf
 import placebo
+from acsuite import eztrim
 
 from vsutil import depth, get_depth, get_y, get_w, split, iterate
 import vapoursynth as vs
@@ -580,3 +584,74 @@ def set_ffms2_log_level(level: Union[str, int] = 0)-> None:
 drm = diff_rescale_mask
 dcm = diff_creditless_mask
 gk = generate_keyframes
+
+
+class VardEnco():
+    path: str
+    src: str
+    src_clip: vs.VideoNode
+    frame_start: int
+    frame_end: int
+    src_cut: vs.VideoNode
+    a_src: str
+    a_src_cut: str
+    a_enc_cut: str
+    name: str
+    output: str
+    chapter: str
+    output_final: str
+    x264_args: dict
+
+    def infos_bd(self, path: str, frame_start: int, frame_end: int) -> None:
+        self.src = path + '.m2ts'
+        self.src_clip = core.lsmas.LWLibavSource(src, prefer_hw=0, ff_loglevel=3)
+        self.src_cut = src_clip[frame_start:frame_end]
+        self.a_src = path + '.wav'
+        self.a_src_cut = path + '_cut_track_{}.wav'
+        self.a_enc_cut = path + '_track_{}.m4a'
+        self.name = Path(sys.argv[0]).stem
+        self.output = name + '.264'
+        self.chapter = 'chapters/' + name + '.txt'
+        self.output_final = name + '.mkv'
+
+    def set_x264_args(self, args: dict) -> None:
+        self.x264_args = args
+    
+    def do_encode(self, clip: vs.VideoNode) -> None:
+        """Compression with x26X"""
+        print('\n\n\nVideo encoding')
+        encode(clip, 'x264', self.output, **self.x264_args)
+
+        print('\n\n\nAudio extraction')
+        eac3to_args = ['eac3to', self.src, '2:', self.a_src, '-log=NUL']
+        subprocess.run(eac3to_args, text=True, check=True, encoding='utf-8')
+
+        print('\n\n\nAudio cutting')
+        eztrim(self.src_clip, (self.frame_start, self.frame_end), self.a_src, self.a_src_cut.format(1))
+
+        print('\n\n\nAudio encoding')
+        qaac_args = ['qaac', self.a_src_cut.format(1), '-V', '127', '--no-delay', '-o', self.a_enc_cut.format(1)]
+        subprocess.run(qaac_args, text=True, check=True, encoding='utf-8')
+
+        ffprobe_args = ['ffprobe', '-loglevel', 'quiet', '-show_entries', 'format_tags=encoder', '-print_format', 'default=nokey=1:noprint_wrappers=1', self.a_enc_cut.format(1)]
+        encoder_name = subprocess.check_output(ffprobe_args, shell=True, encoding='utf-8')
+        f = open("tags_aac.xml", 'w')
+        f.writelines(['<?xml version="1.0"?>', '<Tags>', '<Tag>', '<Targets>', '</Targets>',
+                    '<Simple>', '<Name>ENCODER</Name>', f'<String>{encoder_name}</String>', '</Simple>',
+                    '</Tag>', '</Tags>'])
+        f.close()
+
+        print('\nFinal muxing')
+        mkv_args = ['mkvmerge', '-o', self.output_final,
+                    '--track-name', '0:AVC BDRip by Vardë@Raws-Maji', '--language', '0:jpn', self.output,
+                    '--tags', '0:tags_aac.xml', '--track-name', '0:AAC 2.0', '--language', '0:jpn', self.a_enc_cut.format(1),
+                    '--chapter-language', 'jpn', '--chapters', self.chapter]
+        subprocess.run(mkv_args, text=True, check=True, encoding='utf-8')
+
+        # Clean up
+        files = [self.a_src, self.a_src_cut.format(1),
+                self.a_enc_cut.format(1), 'tags_aac.xml']
+        for file in files:
+            if os.path.exists(file):
+                os.remove(file)
+                    
